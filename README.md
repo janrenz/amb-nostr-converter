@@ -127,6 +127,28 @@ When `--nsec` or `--private-key` is provided (both accept nsec1 or hex format):
 - Event ID and Schnorr signature are generated
 - Output includes `id`, `sig`, and correct `pubkey` fields
 
+## External URL tags (`r`)
+
+Every absolute external URL a resource points at is additionally emitted as a
+Nostr-native `r` tag, per [NIP-AMB](https://git.edufeed.org/edufeed/nips/src/branch/edufeed-amb/AMB.md).
+`r` is what relays and clients actually index — a URL that lives only in a
+flattened `encoding:contentUrl` tag is effectively invisible to full-text
+search.
+
+Collected from `mainEntityOfPage[].id`, `encoding[].contentUrl`,
+`encoding[].embedUrl`, `trailer.contentUrl`, `trailer.embedUrl` and `image`,
+then deduplicated — the same URL commonly appears in more than one role.
+
+```json
+["encoding:contentUrl", "https://cdn.example.org/a.mp4"]
+["r", "https://cdn.example.org/a.mp4"]
+```
+
+The flattened AMB-core tags are unchanged, so round-tripping is unaffected:
+`r` is additive, and `nostrToAmb` ignores it (the spec maps it to no AMB
+property). Values that are not absolute references are skipped, since a bare
+slug is not resolvable by a client.
+
 ## Source adapter: SODIX → AMB
 
 [SODIX](https://sodix.de) is the German federal-state media platform for

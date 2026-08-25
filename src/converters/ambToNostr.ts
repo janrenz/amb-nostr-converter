@@ -395,8 +395,6 @@ export function ambToNostr(
         if (entity.dateModified) {
           tags.push(createTag('mainEntityOfPage:dateModified', entity.dateModified));
         }
-        // Add Nostr-native r tag for the URL
-        tags.push(['r', entity.id]);
       });
     }
 
@@ -483,6 +481,34 @@ export function ambToNostr(
     // Create the Nostr event
     // Per AMB spec, content SHOULD contain description for client compatibility
     // The description tag is kept for relay queryability
+    // Nostr-native `r` tags for every external URL the resource points at.
+    // NIP-AMB designates `r` for external URL references, and it is what
+    // relays and clients actually index — a URL that only lives in a
+    // flattened `encoding:contentUrl` tag is effectively invisible to
+    // full-text search. Collected in one place and deduplicated, because the
+    // same URL commonly appears as both an encoding and a page reference.
+    const externalUrls = new Set<string>();
+    const rememberUrl = (value: string | undefined): void => {
+      if (typeof value !== 'string') return;
+      const url = value.trim();
+      // Only absolute references belong in `r`; a bare slug is not resolvable.
+      if (!/^[a-z][a-z0-9+.-]*:/i.test(url)) return;
+      externalUrls.add(url);
+    };
+
+    ambResource.mainEntityOfPage?.forEach(entity => rememberUrl(entity.id));
+    ambResource.encoding?.forEach(enc => {
+      rememberUrl(enc.contentUrl);
+      rememberUrl(enc.embedUrl);
+    });
+    rememberUrl(ambResource.trailer?.contentUrl);
+    rememberUrl(ambResource.trailer?.embedUrl);
+    rememberUrl(ambResource.image);
+
+    for (const url of externalUrls) {
+      tags.push(['r', url]);
+    }
+
     const event: NostrEducationalEvent = {
       pubkey,
       created_at,
