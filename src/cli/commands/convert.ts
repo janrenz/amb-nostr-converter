@@ -5,6 +5,7 @@ import { ambToNostr, nostrToAmb } from '../../converters/index.js';
 import { sodixToAmb, SODIX_FILTERS, type SodixIdScheme } from '../../sources/sodix/index.js';
 import { ConversionOptions } from '../../types/index.js';
 import { parsePrivateKey, derivePublicKey, signNostrEvent } from '../../utils/signing.js';
+import { bulkTimestamp, nowInSeconds } from '../utils/bulk-timestamps.js';
 
 /**
  * Conversion direction
@@ -130,9 +131,22 @@ async function executeConvert(
     const results: string[] = [];
     let errorCount = 0;
 
-    // Use incrementing timestamps for bulk conversions to ensure unique created_at
-    // values, which prevents cursor-based pagination issues on relays.
-    const baseTimestamp = Math.floor(Date.now() / 1000);
+    // Unique, strictly increasing created_at values for bulk conversions, so
+    // cursor-based pagination on relays works — but counted BACKWARDS from now,
+    // never forwards.
+    //
+    // Counting forwards (base + i) puts almost the whole batch in the future:
+    // at one second per record, 35k records land up to 9.7 hours ahead. That
+    // breaks more than it fixes — `since`/`until` filters and cursors skew,
+    // relays that reject future-dated events drop them, and an addressable
+    // event dated in the future cannot be replaced by a correction until real
+    // time catches up, because the correction is "older" by created_at.
+    //
+    // Counting backwards keeps every value unique and ordered while the newest
+    // record lands exactly at now. The batch then appears to have been created
+    // over the span it actually took.
+    const nowSeconds = nowInSeconds();
+    const timestampFor = (index: number): number => bulkTimestamp(index, inputs.length, nowSeconds);
 
     for (let i = 0; i < inputs.length; i++) {
       const inputJson = inputs[i];
@@ -143,7 +157,7 @@ async function executeConvert(
 
         if (direction === 'amb:nostr') {
           const itemOptions = inputs.length > 1
-            ? { ...conversionOptions, timestamp: baseTimestamp + i }
+            ? { ...conversionOptions, timestamp: timestampFor(i) }
             : conversionOptions;
           const conversionResult = ambToNostr(inputJson, itemOptions);
 
