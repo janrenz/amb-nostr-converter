@@ -10,6 +10,9 @@ Bidirectional conversion between:
 
 Usable as a library or CLI tool.
 
+Ships one **source adapter** that converts a foreign metadata API into AMB, so
+the core converter only ever deals with AMB itself: [SODIX](#source-adapter-sodix--amb).
+
 ## Installation
 
 ```bash
@@ -88,19 +91,24 @@ amb-convert amb:nostr course.json --nsec nsec1...
 
 # Batch convert JSONL
 amb-convert amb:nostr resources.jsonl --nsec $NOSTR_NSEC -o events.jsonl
+
+# SODIX → AMB (source adapter)
+amb-convert sodix:amb sodix-records.jsonl --sodix-filter open-license -o amb.jsonl
 ```
 
 ## CLI Reference
 
 | Option | Description | Direction |
 |--------|-------------|-----------|
-| `<direction>` | `amb:nostr` or `nostr:amb` | Required |
+| `<direction>` | `amb:nostr`, `nostr:amb` or `sodix:amb` | Required |
 | `[input]` | Input file path (omit for stdin) | Both |
 | `-o, --output <file>` | Output file path (omit for stdout) | Both |
 | `-p, --pretty` | Pretty-print JSON | Both |
 | `--tags` | Output only tags array | AMB→Nostr |
 | `--nsec <key>` | Sign with private key (nsec or hex) | AMB→Nostr |
 | `--private-key <key>` | Sign with private key (hex or nsec) | AMB→Nostr |
+| `--sodix-filter <name>` | Subset to keep: `open-license` (default), `free`, `activated`, `all` | SODIX→AMB |
+| `--sodix-id-scheme <name>` | AMB `id` derivation: `urn` (default) or `media` | SODIX→AMB |
 
 ### Batch Processing (JSONL)
 
@@ -118,6 +126,85 @@ When `--nsec` or `--private-key` is provided (both accept nsec1 or hex format):
 - Public key is automatically derived
 - Event ID and Schnorr signature are generated
 - Output includes `id`, `sig`, and correct `pubkey` fields
+
+## Source adapter: SODIX → AMB
+
+[SODIX](https://sodix.de) is the German federal-state media platform for
+educational resources. Its GraphQL API v3 predates AMB, so this is a real
+mapping rather than a renaming.
+
+```bash
+amb-convert sodix:amb records.jsonl --sodix-filter open-license -o amb.jsonl
+amb-convert amb:nostr amb.jsonl --nsec $NOSTR_NSEC -o events.jsonl
+```
+
+```typescript
+import { sodix } from 'amb-nostr-converter';
+
+const result = sodix.sodixToAmb(record);
+if (result.success) console.log(result.data);
+```
+
+### Which subset to publish
+
+`--sodix-filter` is the most consequential option, because the corpus is mostly
+not openly licensed. Measured over 203809 records of the live API (August 2026):
+
+| | Share |
+|---|---|
+| CC license URI (genuinely open) | 18.6 % |
+| "Copyright, freier Zugang" (copyrighted, free *access*) | 53.0 % |
+| "Copyright, lizenzpflichtig" (license required) | 25.1 % |
+| `paymentType: PAID` | 23.5 % |
+| `downloadRight: false` | 29.5 % |
+
+`open-license` is therefore the default. Distributing metadata is the normal
+case for AMB/OERSI — titles, descriptions and links travel, not the media files
+— but whether a given source's terms of use permit it is a legal question.
+
+### The AMB `id` is a one-way decision
+
+`--sodix-id-scheme` determines the AMB `id`, which becomes the Nostr `d` tag. For
+an addressable event (`kind:pubkey:d`) that is the identity across all future
+updates; changing the scheme later produces a second, unlinked event per record
+rather than an update.
+
+| Scheme | Value | Trade-off |
+|---|---|---|
+| `urn` (default) | `urn:sodix:SODIX-0001234` | Stable; departs from AMB's recommendation of a dereferenceable HTTP URI |
+| `media` | the media URL | Dereferenceable, but a moved file yields a new event |
+
+### Mapping decisions worth knowing
+
+**SODIX serves vocabulary names in mixed languages.** `lrts`,
+`educationLevels`, `schoolTypes`, `costs` and most `hubbs` vocabularies are
+English, `subjects` and `competences` are German, and `lands` mixes both within
+one list ("Baden-Württemberg" next to "Bavaria"). KIM-mapped concepts therefore
+carry the authoritative German label from the KIM SKOS scheme itself, `ext`
+concepts carry the SODIX name tagged with the language that vocabulary actually
+uses, and where the language is not determinable no `prefLabel` is claimed.
+
+**Competences do not go to `teaches`.** AMB requires a URI as `id` there, while
+SODIX supplies internal numeric keys (`40004020201`). They surface as
+`ext:de.sodix:kompetenz`.
+
+**Six "languages" are not languages.** `WITHOUT_LANGUAGE`, `AUDIO_DESCRIPTION`,
+`PLAIN_LANGUAGE`, `SIMPLE_LANGUAGE`, `ORIGINAL_VERSION_WITH_SUBTITLES` and
+`SUBTITLES_FOR_THE_HEARING_IMPAIRED` are version or accessibility markers. They
+go to `ext:de.sodix:sprachfassung`, not `inLanguage`.
+
+**`/deed.de` is not `/de/`.** In CC URLs, `…/by-sa/4.0/deed.de` is only the
+German-language view of the same license and is normalised away.
+`…/by-nc-nd/3.0/de/` is the ported German license — a different license, which is
+preserved.
+
+**Every lossy mapping keeps the original.** 48 SODIX resource types collapse onto
+26 HCRT concepts and 2043 subjects onto 61 KIM subjects, so the SODIX value is
+always additionally emitted as `ext:de.sodix:ressourcentyp` / `…:fach`.
+Simplifying is fine; silently dropping data is not.
+
+Target vocabularies are verified against the live SKOS schemes: HCRT (26
+concepts), ISCED-1997 (7 levels) and KIM school subjects (61 subjects).
 
 ## Development
 

@@ -2,13 +2,14 @@ import { Command } from 'commander';
 import { readInput, writeOutput, parseJSON, parseJSONLines, formatJSON } from '../utils/file-io.js';
 import { success, error as displayError, info } from '../utils/output.js';
 import { ambToNostr, nostrToAmb } from '../../converters/index.js';
+import { sodixToAmb, SODIX_FILTERS, type SodixIdScheme } from '../../sources/sodix/index.js';
 import { ConversionOptions } from '../../types/index.js';
 import { parsePrivateKey, derivePublicKey, signNostrEvent } from '../../utils/signing.js';
 
 /**
  * Conversion direction
  */
-type ConversionDirection = 'amb:nostr' | 'nostr:amb';
+type ConversionDirection = 'amb:nostr' | 'nostr:amb' | 'sodix:amb';
 
 /**
  * Parse conversion direction from string
@@ -23,9 +24,13 @@ function parseDirection(direction: string): ConversionDirection {
   if (normalized === 'nostr:amb' || normalized === 'nostr-amb') {
     return 'nostr:amb';
   }
-  
+
+  if (normalized === 'sodix:amb' || normalized === 'sodix-amb') {
+    return 'sodix:amb';
+  }
+
   throw new Error(
-    `Invalid conversion direction: "${direction}". Must be "amb:nostr" or "nostr:amb"`
+    `Invalid conversion direction: "${direction}". Must be "amb:nostr", "nostr:amb" or "sodix:amb"`
   );
 }
 
@@ -35,6 +40,8 @@ interface ConvertCommandOptions {
   tags?: boolean;
   nsec?: string;
   privateKey?: string;
+  sodixFilter?: string;
+  sodixIdScheme?: string;
 }
 
 /**
@@ -90,8 +97,8 @@ async function executeConvert(
       isJsonl = true;
     }
 
-    // Warn about inapplicable options for nostr:amb
-    if (direction === 'nostr:amb') {
+    // Warn about inapplicable options for the AMB-producing directions
+    if (direction === 'nostr:amb' || direction === 'sodix:amb') {
       if (options.nsec || options.privateKey) {
         console.error('⚠ Warning: --nsec and --private-key options are ignored for nostr:amb conversion');
       }
@@ -100,7 +107,25 @@ async function executeConvert(
       }
     }
 
-    info(`Converting ${isJsonl ? `${inputs.length} objects` : '1 object'} ${direction === 'amb:nostr' ? 'AMB to Nostr' : 'Nostr to AMB'}...`);
+    const DIRECTION_LABELS: Record<ConversionDirection, string> = {
+      'amb:nostr': 'AMB to Nostr',
+      'nostr:amb': 'Nostr to AMB',
+      'sodix:amb': 'SODIX to AMB',
+    };
+    info(`Converting ${isJsonl ? `${inputs.length} objects` : '1 object'} ${DIRECTION_LABELS[direction]}...`);
+
+    const sodixFilterName = options.sodixFilter ?? 'open-license';
+    const sodixFilter = SODIX_FILTERS[sodixFilterName];
+    if (direction === 'sodix:amb' && !sodixFilter) {
+      throw new Error(
+        `Unknown --sodix-filter "${sodixFilterName}". Available: ${Object.keys(SODIX_FILTERS).join(', ')}`
+      );
+    }
+    const sodixIdScheme = (options.sodixIdScheme ?? 'urn') as SodixIdScheme;
+    if (direction === 'sodix:amb' && sodixIdScheme !== 'urn' && sodixIdScheme !== 'media') {
+      throw new Error(`Unknown --sodix-id-scheme "${sodixIdScheme}". Available: urn, media`);
+    }
+    let filteredCount = 0;
 
     const results: string[] = [];
     let errorCount = 0;
@@ -144,6 +169,21 @@ async function executeConvert(
           }
 
           result = options.tags ? event.tags : event;
+        } else if (direction === 'sodix:amb') {
+          // Records outside the selected subset are skipped, not failed: a
+          // filter excluding most of a corpus is the normal case, not an error.
+          if (sodixFilter && !sodixFilter(inputJson)) {
+            filteredCount++;
+            continue;
+          }
+
+          const conversionResult = sodixToAmb(inputJson, { idScheme: sodixIdScheme });
+
+          if (!conversionResult.success) {
+            throw new Error(conversionResult.error);
+          }
+
+          result = conversionResult.data;
         } else {
           const conversionResult = nostrToAmb(inputJson);
 
@@ -166,7 +206,17 @@ async function executeConvert(
     }
 
     if (results.length === 0) {
+      // A filter that excludes every record is a legitimate outcome, not a
+      // failure — reporting it as "all conversions failed" would be wrong.
+      if (filteredCount > 0 && errorCount === 0) {
+        info(`No records matched the filter (${filteredCount} filtered out) — nothing written.`);
+        return;
+      }
       throw new Error('All conversions failed');
+    }
+
+    if (filteredCount > 0) {
+      info(`${filteredCount} record${filteredCount === 1 ? '' : 's'} filtered out by --sodix-filter`);
     }
 
     // Join results: pretty mode uses blank line separator, compact uses newline
@@ -199,13 +249,21 @@ export function createConvertCommand(): Command {
   
   command
     .description('Convert between AMB and Nostr educational event formats')
-    .argument('<direction>', 'Conversion direction: "amb:nostr" or "nostr:amb"')
+    .argument('<direction>', 'Conversion direction: "amb:nostr", "nostr:amb" or "sodix:amb"')
     .argument('[input]', 'Input file path (omit to read from stdin)')
     .option('-o, --output <file>', 'Output file path (omit to write to stdout)')
     .option('-p, --pretty', 'Pretty-print JSON output', false)
     .option('--tags', 'Output only the tags array', false)
     .option('--nsec <key>', 'Sign event with nsec (bech32 format private key)')
     .option('--private-key <key>', 'Sign event with hex private key')
+    .option(
+      '--sodix-filter <name>',
+      'sodix:amb only — subset to keep: open-license (default), free, activated, all'
+    )
+    .option(
+      '--sodix-id-scheme <name>',
+      'sodix:amb only — AMB id derivation: urn (default) or media'
+    )
     .action(async (directionStr: string, inputFile: string | undefined, options: ConvertCommandOptions) => {
       try {
         const direction = parseDirection(directionStr);
