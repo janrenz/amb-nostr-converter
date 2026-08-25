@@ -11,6 +11,24 @@ import { parsePrivateKey, derivePublicKey, signNostrEvent } from '../../utils/si
 type ConversionDirection = 'amb:nostr' | 'nostr:amb';
 
 /**
+ * created_at for item `index` of a bulk conversion of `total` items.
+ *
+ * Each event needs its own created_at: a batch sharing one timestamp breaks
+ * relays that paginate with `until = oldest - 1`, which drops events silently
+ * or loops. The seconds therefore step by one per item.
+ *
+ * They step *backwards* from `now`, so the batch ends at the present instead of
+ * running `total` seconds into the future. Future-dating is not cosmetic here:
+ * kind-30142 is addressable, so a relay keeps the highest created_at per
+ * kind:pubkey:d — a correction published later at real wall-clock time would
+ * look older than the synthetic stamp and be discarded unseen. Observed on a
+ * 16,139-record SODIX ingest whose last event was dated 4h29m ahead.
+ */
+export function bulkTimestamp(now: number, index: number, total: number): number {
+  return now - (total - 1 - index);
+}
+
+/**
  * Parse conversion direction from string
  */
 function parseDirection(direction: string): ConversionDirection {
@@ -105,8 +123,7 @@ async function executeConvert(
     const results: string[] = [];
     let errorCount = 0;
 
-    // Use incrementing timestamps for bulk conversions to ensure unique created_at
-    // values, which prevents cursor-based pagination issues on relays.
+    // Unique created_at per item, stepping back from now (see bulkTimestamp).
     const baseTimestamp = Math.floor(Date.now() / 1000);
 
     for (let i = 0; i < inputs.length; i++) {
@@ -118,7 +135,7 @@ async function executeConvert(
 
         if (direction === 'amb:nostr') {
           const itemOptions = inputs.length > 1
-            ? { ...conversionOptions, timestamp: baseTimestamp + i }
+            ? { ...conversionOptions, timestamp: bulkTimestamp(baseTimestamp, i, inputs.length) }
             : conversionOptions;
           const conversionResult = ambToNostr(inputJson, itemOptions);
 
