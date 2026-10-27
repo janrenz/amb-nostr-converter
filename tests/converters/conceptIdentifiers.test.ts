@@ -4,6 +4,7 @@
 import { nip19 } from 'nostr-tools';
 import { ambToNostr } from '../../src/converters/ambToNostr';
 import { nostrToAmb } from '../../src/converters/nostrToAmb';
+import { canonicalConceptId } from '../../src/utils/conceptId';
 
 const PK = 'd2689e2f41dabfba953da26655a94ce2aa4e029c383ee921c6a4deafab99a612';
 const N56 = 'nostr:naddr1qqpn2tfkqgsdy6y79aqa40a6j576yej449xw92jwq2wrs0hfy8r2fh404wv6vysrqsqqpxe6vja26r';
@@ -87,5 +88,18 @@ describe('concept identifiers (NIP-VOCAB canonical naddr)', () => {
     const r = nostrToAmb(ev as any);
     expect(r.success).toBe(true);
     expect(r.data!.about[0].id).toBe('nostr:39738:zz:x');
+  });
+
+  it('works without Node globals (browser bundle): no Buffer at all', () => {
+    const saved = (globalThis as any).Buffer;
+    (globalThis as any).Buffer = undefined;
+    try {
+      expect(canonicalConceptId(`nostr:39738:${PK}:5-6`).id).toBe(N56);
+      const long = `nostr:39738:${PK}:${'x'.repeat(300)}`;
+      expect(canonicalConceptId(long).id).toBe(long);
+      expect(canonicalConceptId(`nostr:39738:${PK}:${'ü'.repeat(128)}`).id).toBe(`nostr:39738:${PK}:${'ü'.repeat(128)}`); // 256 UTF-8 bytes
+    } finally {
+      (globalThis as any).Buffer = saved;
+    }
   });
 });

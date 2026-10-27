@@ -29,7 +29,9 @@ function publishedKind(kind: number): number {
 
 function fromTriple(kind: number, pubkey: string, d: string, relays: string[] = []): { kind: number; pubkey: string; d: string; relays: string[] } | null {
   if (!Number.isInteger(kind) || kind <= 0 || !HEX64.test(pubkey) || typeof d !== 'string') return null;
-  if (Buffer.byteLength(d, 'utf8') > 255) return null; // no naddr can carry it (one-byte TLV length)
+  // No naddr can carry a d longer than one TLV length byte. TextEncoder, not Buffer:
+  // this module also ships in the browser bundle, where Buffer does not exist.
+  if (new TextEncoder().encode(d).length > 255) return null;
   return { kind: publishedKind(kind), pubkey: pubkey.toLowerCase(), d, relays };
 }
 
