@@ -3,6 +3,7 @@
  */
 
 import { nip19 } from 'nostr-tools';
+import { canonicalConceptId } from '../utils/conceptId.js';
 import {
   NostrEvent,
   AmbLearningResource,
@@ -73,8 +74,13 @@ export function nostrToAmb(
     // C2: Nostr-native creator/contributor (p tags)
     applyPersonTags(amb, pTags);
 
-    // C3: Nostr-native relations (a tags)
+    // C3: Nostr-native relations (a tags). Facet-marked companion tags
+    // (role = a concept prefix such as "about") are ignored here: the concept is
+    // already present through its `<prefix>:id` triple (AMB.md reverse step 10).
     applyRelationTags(amb, aTags);
+
+    // NIP-VOCAB: concept identifiers in legacy forms are canonicalised on read.
+    canonicaliseConceptIds(amb, warnings);
 
     // C4: content is the preferred source for description
     if (typeof event.content === 'string' && event.content.length > 0) {
@@ -623,16 +629,45 @@ function applyRelationTags(amb: any, aTags: string[][]): void {
     const kind = parseInt(rawKind, 10);
     const identifier = parts.slice(2).join(':');
     if (!Number.isFinite(kind)) continue;
-    const hint = tag[2];
-    const relays = hint ? [hint] : [];
+    // The identifier is the canonical, relay-less naddr (AMB.md step 9); the relay
+    // hint stays on the a tag and is not part of the identifier.
     let naddr: string;
     try {
-      naddr = nip19.naddrEncode({ identifier, pubkey, kind, relays });
+      naddr = nip19.naddrEncode({ identifier, pubkey, kind, relays: [] });
     } catch {
       continue;
     }
     const relation = { id: `nostr:${naddr}`, type: 'LearningResource' };
     if (!Array.isArray(amb[role])) amb[role] = [];
     amb[role].push(relation);
+  }
+}
+
+const CONCEPT_ARRAY_PROPS = ['about', 'learningResourceType', 'audience', 'teaches', 'assesses', 'competencyRequired', 'educationalLevel'];
+
+/**
+ * Rewrite legacy Nostr concept identifiers (nostr:<kind>:<pubkey>:<d>, urn:nostr:…,
+ * hinted or re-ordered naddr) to the canonical Nostr URI in AMB-core concept
+ * properties and ext concept facets. External URIs and unparseable values are
+ * left as they are. Never throws.
+ */
+function canonicaliseConceptIds(amb: any, warnings: string[]): void {
+  const fix = (concept: any) => {
+    if (!concept || typeof concept !== 'object' || typeof concept.id !== 'string') return;
+    const canon = canonicalConceptId(concept.id);
+    if (canon.warning) warnings.push(canon.warning);
+    concept.id = canon.id;
+  };
+  for (const prop of CONCEPT_ARRAY_PROPS) {
+    if (Array.isArray(amb[prop])) amb[prop].forEach(fix);
+  }
+  fix(amb.interactivityType);
+  if (amb.ext && typeof amb.ext === 'object') {
+    for (const facets of Object.values(amb.ext) as any[]) {
+      if (!facets || typeof facets !== 'object') continue;
+      for (const items of Object.values(facets) as any[]) {
+        if (Array.isArray(items)) items.forEach(fix);
+      }
+    }
   }
 }
