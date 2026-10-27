@@ -643,6 +643,11 @@ function pushCompanionTag(
   companionSeen: Set<string>
 ): void {
   if (options.conceptCompanionTags === false || !canon.address) return;
+  // Companion tags are defined for NIP-VOCAB entities (39737 scheme, 39738 concept,
+  // 39739 collection). A Nostr URI of another kind is still a valid identifier but
+  // gets no companion tag.
+  const kind = Number(canon.address.split(':')[0]);
+  if (kind < 39737 || kind > 39739) return;
   const key = `${canon.address}\u0000${prefix}`;
   if (companionSeen.has(key)) return;
   companionSeen.add(key);

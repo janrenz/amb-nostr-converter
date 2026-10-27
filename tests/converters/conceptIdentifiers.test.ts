@@ -102,4 +102,16 @@ describe('concept identifiers (NIP-VOCAB canonical naddr)', () => {
       (globalThis as any).Buffer = saved;
     }
   });
+
+  it('companion a tags are emitted for NIP-VOCAB kinds only (39737–39739), never for other addressable kinds', () => {
+    const resourceId = 'nostr:' + nip19.naddrEncode({ kind: 30142, pubkey: PK, identifier: 'other-resource', relays: [] });
+    const schemeId = 'nostr:' + nip19.naddrEncode({ kind: 39737, pubkey: PK, identifier: 'klassenstufen', relays: [] });
+    const tags = tagsOf({ about: [{ id: resourceId }, { id: schemeId }, { id: N56 }] });
+    expect(tags).toContainEqual(['about:id', resourceId]); // canonicalised, kept
+    const companions = tags.filter(t => t[0] === 'a');
+    expect(companions).toEqual([
+      ['a', `39737:${PK}:klassenstufen`, '', 'about'],
+      ['a', `39738:${PK}:5-6`, '', 'about'],
+    ]);
+  });
 });
