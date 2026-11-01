@@ -110,6 +110,67 @@ describe('ambToNostr', () => {
       expect(licenseTag![1]).toBe('https://creativecommons.org/licenses/by-sa/4.0/');
     });
 
+    test('should emit one license:id tag per entry when license is a non-standard Concept array', () => {
+      // e.g. LEHRE LADEN emits CC BY-SA as two DINI AG KIM license-type concepts
+      // (attribution + shareAlike) instead of a single License object.
+      const resourceWithArrayLicense: AmbLearningResource = {
+        ...courseSample,
+        license: [
+          { id: 'https://w3id.org/kim/license/attribution', type: 'Concept' },
+          { id: 'https://w3id.org/kim/license/shareAlike', type: 'Concept' },
+        ] as any,
+      };
+
+      const result = ambToNostr(resourceWithArrayLicense, options);
+      expect(result.success).toBe(true);
+      const event = result.data!;
+
+      const licenseTags = event.tags.filter(t => t[0] === 'license:id');
+      expect(licenseTags.length).toBe(2);
+      expect(licenseTags.map(t => t[1])).toEqual([
+        'https://w3id.org/kim/license/attribution',
+        'https://w3id.org/kim/license/shareAlike',
+      ]);
+      expect(result.warnings?.some(w => w.includes('license is an array of Concepts'))).toBe(true);
+    });
+
+    test('should round-trip a multi-concept license array through nostrToAmb as an array', () => {
+      const resourceWithArrayLicense: AmbLearningResource = {
+        ...courseSample,
+        license: [
+          { id: 'https://w3id.org/kim/license/attribution', type: 'Concept' },
+          { id: 'https://w3id.org/kim/license/shareAlike', type: 'Concept' },
+        ] as any,
+      };
+
+      const forward = ambToNostr(resourceWithArrayLicense, options);
+      const event = forward.data!;
+
+      const back = nostrToAmb(event);
+      expect(back.success).toBe(true);
+      const amb = back.data!;
+
+      expect(Array.isArray(amb.license)).toBe(true);
+      expect((amb.license as any[]).map(l => l.id)).toEqual([
+        'https://w3id.org/kim/license/attribution',
+        'https://w3id.org/kim/license/shareAlike',
+      ]);
+    });
+
+    test('single-object license is unchanged and does not round-trip as an array', () => {
+      const result = ambToNostr(courseSample, options);
+      const event = result.data!;
+
+      const licenseTags = event.tags.filter(t => t[0] === 'license:id');
+      expect(licenseTags.length).toBe(1);
+
+      const back = nostrToAmb(event);
+      expect(back.success).toBe(true);
+      const amb = back.data!;
+      expect(Array.isArray(amb.license)).toBe(false);
+      expect(amb.license?.id).toBe('https://creativecommons.org/licenses/by-sa/4.0/');
+    });
+
     test('should include educational metadata with language tags', () => {
       const result = ambToNostr(courseSample, options);
       const event = result.data!;

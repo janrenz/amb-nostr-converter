@@ -99,17 +99,19 @@ export function ambToNostr(
       normalizedTypes = rawTypes as string[];
     }
 
-    // Some sources emit `license` as Concept[] instead of { id: string }
-    let normalizedLicense: { id: string } | undefined;
+    // Some sources emit `license` as Concept[] instead of { id: string } (e.g. a
+    // combined CC BY-SA license expressed as separate attribution/shareAlike
+    // concepts in the DINI AG KIM license-type vocabulary). Keep every entry
+    // that has an id, in order, so none of the license semantics are dropped.
+    let normalizedLicenses: Array<{ id: string }> = [];
     if (ambResource.license) {
       if (Array.isArray(ambResource.license)) {
-        warnings.push('Non-standard AMB: license is an array of Concepts, using first entry');
-        const first = (ambResource.license as any[])[0];
-        if (first?.id) {
-          normalizedLicense = { id: first.id };
-        }
-      } else {
-        normalizedLicense = ambResource.license;
+        warnings.push('Non-standard AMB: license is an array of Concepts');
+        normalizedLicenses = (ambResource.license as any[])
+          .filter(entry => entry?.id)
+          .map(entry => ({ id: entry.id }));
+      } else if ((ambResource.license as any)?.id) {
+        normalizedLicenses = [ambResource.license];
       }
     }
 
@@ -205,10 +207,12 @@ export function ambToNostr(
       });
     }
 
-    // Add license (using colon-delimited tag)
-    if (normalizedLicense?.id) {
-      tags.push(createTag('license:id', normalizedLicense.id));
-    }
+    // Add license (using colon-delimited tag) - one `license:id` tag per
+    // concept, in order, so a multi-concept license (e.g. CC BY-SA expressed
+    // as attribution + shareAlike) round-trips without losing entries.
+    normalizedLicenses.forEach(license => {
+      tags.push(createTag('license:id', license.id));
+    });
 
     // Add free access flag (spec uses full name)
     if (typeof ambResource.isAccessibleForFree === 'boolean') {
@@ -376,12 +380,21 @@ export function ambToNostr(
               addPersonOrOrgTags(tags, `${prefix}:creator`, creator);
             });
           }
-          // Add nested license tag
+          // Add nested license tag(s)
           // String license uses prefix:license (simple value)
           // Object license uses prefix:license:id (nested structure)
+          // Non-standard array-of-Concepts license (see top-level license
+          // handling above) emits one prefix:license:id tag per entry, in order.
           if (ref.license) {
             if (typeof ref.license === 'string') {
               tags.push(createTag(`${prefix}:license`, ref.license));
+            } else if (Array.isArray(ref.license)) {
+              warnings.push(`Non-standard AMB: ${prefix}.license is an array of Concepts`);
+              (ref.license as any[])
+                .filter(entry => entry?.id)
+                .forEach(entry => {
+                  tags.push(createTag(`${prefix}:license:id`, entry.id));
+                });
             } else if (ref.license.id) {
               tags.push(createTag(`${prefix}:license:id`, ref.license.id));
             }
