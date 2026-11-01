@@ -317,31 +317,53 @@ function reconstructNestedObjects(
 
     if (!finalKey || !value) continue;
 
-    // Build nested structure to get target object
+    // Build nested structure to get target object. Track the container that
+    // holds `target` (parentOfTarget/keyIntoParent) so a collision found at a
+    // NESTED level (e.g. the "license" under a hasPart ref) can be resolved
+    // by promoting just that nested field to an array, rather than treated
+    // as a boundary of the outer ref. If a nested field was already promoted
+    // to an array (by an earlier collision at this same path), descend into
+    // its last element so the walk continues filling the current entry.
     let target = currentObject;
+    let parentOfTarget: any = null;
+    let keyIntoParent: string | null = null;
     for (let i = 1; i < parts.length - 1; i++) {
       const part = parts[i];
       if (part) {
         if (!target[part]) {
           target[part] = {};
         }
-        target = target[part];
+        parentOfTarget = target;
+        keyIntoParent = part;
+        const node = target[part];
+        target = Array.isArray(node) ? node[node.length - 1] : node;
       }
     }
 
     // BOUNDARY DETECTION: Check if we should start a new object
     // Three-tier strategy:
-    // 1. Priority: 'id' property signals a new object (semantic boundary)
+    // 1. Priority: 'id' property signals a new object (semantic boundary) —
+    //    but only when the collision is on the ref's OWN id (target is the
+    //    top-level currentObject). A collision on a nested field's id (e.g.
+    //    repeated `hasPart:license:id`) is a second entry of that nested
+    //    field on the SAME ref, not a new ref — handled below instead.
     // 2. 'type' collision: If the previous tag at this level was also 'type',
     //    collect into array (multi-type like ["LearningResource", "Course"]).
     //    If non-type tags appeared in between, it's a new object boundary.
     // 3. Fallback: Any other property collision means new object
     let shouldStartNewObject = false;
+    let nestedFieldIdCollision = false;
 
     if (Object.keys(currentObject).length > 0) {
       if (finalKey === 'id' && target.hasOwnProperty('id')) {
-        // Primary signal: 'id' reappearance means new object
-        shouldStartNewObject = true;
+        if (parentOfTarget === null) {
+          // Primary signal: ref's own 'id' reappearing means a new ref
+          shouldStartNewObject = true;
+        } else {
+          // Nested field's 'id' reappearing: stays on the same ref, as a
+          // new entry in that nested field (promoted to an array below).
+          nestedFieldIdCollision = true;
+        }
       } else if (finalKey === 'type' && target.hasOwnProperty('type')) {
         // 'type' collision: boundary only if non-type tags appeared since last 'type'
         if (lastKeyAtTargetLevel !== 'type') {
@@ -352,6 +374,19 @@ function reconstructNestedObjects(
         // Fallback: Property collision means new object
         shouldStartNewObject = true;
       }
+    }
+
+    if (nestedFieldIdCollision && keyIntoParent) {
+      // Promote the nested field (e.g. `license`) from a single object to
+      // an array, and continue writing into a fresh element of it.
+      const existing = parentOfTarget[keyIntoParent];
+      const fresh: any = {};
+      if (Array.isArray(existing)) {
+        existing.push(fresh);
+      } else {
+        parentOfTarget[keyIntoParent] = [existing, fresh];
+      }
+      target = fresh;
     }
 
     if (shouldStartNewObject) {
