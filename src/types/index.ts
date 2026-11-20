@@ -36,6 +36,11 @@ export interface ConversionOptions {
   // Map of AMB resource IDs to Nostr event info for a tag generation
   // Key is the AMB id, value is the Nostr event reference
   relatedEvents?: Record<string, NostrEventReference>;
+
+  // Emit a companion ["a", "39738:<pubkey>:<d>", <relay>, "<prefix>"] tag for every
+  // concept identified by a Nostr URI (NIP-VOCAB "Referencing Vocabulary Concepts").
+  // Default true; false keeps legacy output byte-stable apart from id canonicalisation.
+  conceptCompanionTags?: boolean;
 }
 
 /**

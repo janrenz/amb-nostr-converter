@@ -110,6 +110,188 @@ describe('ambToNostr', () => {
       expect(licenseTag![1]).toBe('https://creativecommons.org/licenses/by-sa/4.0/');
     });
 
+    test('should emit one license:id tag per entry when license is a non-standard Concept array', () => {
+      // e.g. LEHRE LADEN emits CC BY-SA as two DINI AG KIM license-type concepts
+      // (attribution + shareAlike) instead of a single License object.
+      const resourceWithArrayLicense: AmbLearningResource = {
+        ...courseSample,
+        license: [
+          { id: 'https://w3id.org/kim/license/attribution', type: 'Concept' },
+          { id: 'https://w3id.org/kim/license/shareAlike', type: 'Concept' },
+        ] as any,
+      };
+
+      const result = ambToNostr(resourceWithArrayLicense, options);
+      expect(result.success).toBe(true);
+      const event = result.data!;
+
+      const licenseTags = event.tags.filter(t => t[0] === 'license:id');
+      expect(licenseTags.length).toBe(2);
+      expect(licenseTags.map(t => t[1])).toEqual([
+        'https://w3id.org/kim/license/attribution',
+        'https://w3id.org/kim/license/shareAlike',
+      ]);
+      expect(result.warnings?.some(w => w.includes('license is an array of Concepts'))).toBe(true);
+    });
+
+    test('should round-trip a multi-concept license array through nostrToAmb as an array', () => {
+      const resourceWithArrayLicense: AmbLearningResource = {
+        ...courseSample,
+        license: [
+          { id: 'https://w3id.org/kim/license/attribution', type: 'Concept' },
+          { id: 'https://w3id.org/kim/license/shareAlike', type: 'Concept' },
+        ] as any,
+      };
+
+      const forward = ambToNostr(resourceWithArrayLicense, options);
+      const event = forward.data!;
+
+      const back = nostrToAmb(event);
+      expect(back.success).toBe(true);
+      const amb = back.data!;
+
+      expect(Array.isArray(amb.license)).toBe(true);
+      expect((amb.license as any[]).map(l => l.id)).toEqual([
+        'https://w3id.org/kim/license/attribution',
+        'https://w3id.org/kim/license/shareAlike',
+      ]);
+    });
+
+    test('single-object license is unchanged and does not round-trip as an array', () => {
+      const result = ambToNostr(courseSample, options);
+      const event = result.data!;
+
+      const licenseTags = event.tags.filter(t => t[0] === 'license:id');
+      expect(licenseTags.length).toBe(1);
+
+      const back = nostrToAmb(event);
+      expect(back.success).toBe(true);
+      const amb = back.data!;
+      expect(Array.isArray(amb.license)).toBe(false);
+      expect(amb.license?.id).toBe('https://creativecommons.org/licenses/by-sa/4.0/');
+    });
+
+    test('nested hasPart license: object and single-entry array emit byte-identical tags', () => {
+      // oersi pipeline hashes converter output, so a single-entry array must
+      // not change the tags compared to the plain-object license shape.
+      function baseWithHasPartLicense(license: any): AmbLearningResource {
+        return {
+          '@context': ['https://w3id.org/kim/amb/context.jsonld'],
+          id: 'https://example.org/r1',
+          type: ['LearningResource'],
+          name: 'Test',
+          hasPart: [
+            {
+              id: 'https://example.org/part1',
+              license,
+            },
+          ],
+        } as any;
+      }
+
+      const objectResult = ambToNostr(
+        baseWithHasPartLicense({ id: 'https://w3id.org/kim/license/attribution' }),
+        options
+      );
+      const arrayResult = ambToNostr(
+        baseWithHasPartLicense([{ id: 'https://w3id.org/kim/license/attribution' }] as any),
+        options
+      );
+
+      expect(objectResult.success).toBe(true);
+      expect(arrayResult.success).toBe(true);
+
+      const objectTags = objectResult.data!.tags.filter(t => t[0] !== 'created_at');
+      const arrayTags = arrayResult.data!.tags.filter(t => t[0] !== 'created_at');
+      expect(arrayTags).toEqual(objectTags);
+
+      const hasPartLicenseTags = objectTags.filter(t => t[0] === 'hasPart:license:id');
+      expect(hasPartLicenseTags).toEqual([['hasPart:license:id', 'https://w3id.org/kim/license/attribution']]);
+    });
+
+    test('nested license array on a hasPart ref emits one hasPart:license:id tag per entry and warns, without touching other refs', () => {
+      const resource: AmbLearningResource = {
+        '@context': ['https://w3id.org/kim/amb/context.jsonld'],
+        id: 'https://example.org/r1',
+        type: ['LearningResource'],
+        name: 'Test',
+        hasPart: [
+          {
+            id: 'https://example.org/part1',
+            license: [
+              { id: 'https://w3id.org/kim/license/attribution' },
+              { id: 'https://w3id.org/kim/license/shareAlike' },
+            ] as any,
+          },
+        ],
+      } as any;
+
+      const result = ambToNostr(resource, options);
+      expect(result.success).toBe(true);
+      const event = result.data!;
+
+      const idTags = event.tags.filter(t => t[0] === 'hasPart:id');
+      expect(idTags).toEqual([['hasPart:id', 'https://example.org/part1']]);
+
+      const licenseTags = event.tags.filter(t => t[0] === 'hasPart:license:id');
+      expect(licenseTags.map(t => t[1])).toEqual([
+        'https://w3id.org/kim/license/attribution',
+        'https://w3id.org/kim/license/shareAlike',
+      ]);
+      expect(result.warnings?.some(w => w.includes('hasPart.license is an array of Concepts'))).toBe(true);
+    });
+
+    test('nested round trip: two hasPart refs, each with a 2-entry license array, stay on their own ref', () => {
+      const resource: AmbLearningResource = {
+        '@context': ['https://w3id.org/kim/amb/context.jsonld'],
+        id: 'https://example.org/r1',
+        type: ['LearningResource'],
+        name: 'Test',
+        hasPart: [
+          {
+            id: 'https://example.org/part1',
+            license: [
+              { id: 'https://w3id.org/kim/license/attribution' },
+              { id: 'https://w3id.org/kim/license/shareAlike' },
+            ] as any,
+          },
+          {
+            id: 'https://example.org/part2',
+            license: [
+              { id: 'https://w3id.org/kim/license/commercial' },
+              { id: 'https://w3id.org/kim/license/noRestrictions' },
+            ] as any,
+          },
+        ],
+      } as any;
+
+      const forward = ambToNostr(resource, options);
+      expect(forward.success).toBe(true);
+      const event = forward.data!;
+
+      const back = nostrToAmb(event);
+      expect(back.success).toBe(true);
+      const amb = back.data!;
+
+      expect(Array.isArray(amb.hasPart)).toBe(true);
+      expect(amb.hasPart).toHaveLength(2);
+
+      const [part1, part2] = amb.hasPart as any[];
+      expect(part1.id).toBe('https://example.org/part1');
+      expect(Array.isArray(part1.license)).toBe(true);
+      expect(part1.license.map((l: any) => l.id)).toEqual([
+        'https://w3id.org/kim/license/attribution',
+        'https://w3id.org/kim/license/shareAlike',
+      ]);
+
+      expect(part2.id).toBe('https://example.org/part2');
+      expect(Array.isArray(part2.license)).toBe(true);
+      expect(part2.license.map((l: any) => l.id)).toEqual([
+        'https://w3id.org/kim/license/commercial',
+        'https://w3id.org/kim/license/noRestrictions',
+      ]);
+    });
+
     test('should include educational metadata with language tags', () => {
       const result = ambToNostr(courseSample, options);
       const event = result.data!;

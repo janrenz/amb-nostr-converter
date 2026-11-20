@@ -5,6 +5,7 @@
 
 import crypto from 'crypto';
 import { nip19 } from 'nostr-tools';
+import { canonicalConceptId } from '../utils/conceptId.js';
 import {
   AmbLearningResource,
   getResourceType,
@@ -98,22 +99,30 @@ export function ambToNostr(
       normalizedTypes = rawTypes as string[];
     }
 
-    // Some sources emit `license` as Concept[] instead of { id: string }
-    let normalizedLicense: { id: string } | undefined;
+    // Some sources emit `license` as Concept[] instead of { id: string } (e.g. a
+    // combined CC BY-SA license expressed as separate attribution/shareAlike
+    // concepts in the DINI AG KIM license-type vocabulary). Keep every entry
+    // that has an id, in order, so none of the license semantics are dropped.
+    let normalizedLicenses: Array<{ id: string }> = [];
     if (ambResource.license) {
       if (Array.isArray(ambResource.license)) {
-        warnings.push('Non-standard AMB: license is an array of Concepts, using first entry');
-        const first = (ambResource.license as any[])[0];
-        if (first?.id) {
-          normalizedLicense = { id: first.id };
-        }
-      } else {
-        normalizedLicense = ambResource.license;
+        warnings.push('Non-standard AMB: license is an array of Concepts');
+        normalizedLicenses = (ambResource.license as any[])
+          .filter(entry => entry?.id)
+          .map(entry => ({ id: entry.id }));
+      } else if ((ambResource.license as any)?.id) {
+        normalizedLicenses = [ambResource.license];
       }
     }
 
     // Build tags array
     const tags: NostrTag[] = [];
+    // One companion `a` tag per (address, prefix) per event.
+    const companionSeen = new Set<string>();
+    const emitConcept = (prefix: string, concept: Concept | undefined | null) => {
+      if (!concept) return;
+      emitConceptTags(tags, prefix, concept, options, companionSeen, warnings);
+    };
 
     // Add deterministic identifier (d tag) - use original AMB ID directly per spec
     tags.push(createTag('d', ambResource.id));
@@ -198,10 +207,12 @@ export function ambToNostr(
       });
     }
 
-    // Add license (using colon-delimited tag)
-    if (normalizedLicense?.id) {
-      tags.push(createTag('license:id', normalizedLicense.id));
-    }
+    // Add license (using colon-delimited tag) - one `license:id` tag per
+    // concept, in order, so a multi-concept license (e.g. CC BY-SA expressed
+    // as attribution + shareAlike) round-trips without losing entries.
+    normalizedLicenses.forEach(license => {
+      tags.push(createTag('license:id', license.id));
+    });
 
     // Add free access flag (spec uses full name)
     if (typeof ambResource.isAccessibleForFree === 'boolean') {
@@ -225,70 +236,22 @@ export function ambToNostr(
 
     // Add subjects (using colon-delimited tags)
     if (ambResource.about && ambResource.about.length > 0) {
-      ambResource.about.forEach(subject => {
-        if (subject.id) {
-          tags.push(createTag('about:id', subject.id));
-        }
-        if (subject.prefLabel) {
-          Object.entries(subject.prefLabel).forEach(([lang, label]) => {
-            tags.push(createTag(`about:prefLabel:${lang}`, label));
-          });
-        }
-        if (subject.type) {
-          tags.push(createTag('about:type', subject.type));
-        }
-      });
+      ambResource.about.forEach(subject => emitConcept('about', subject));
     }
 
     // Add educational level (using colon-delimited tags)
     if (ambResource.educationalLevel && ambResource.educationalLevel.length > 0) {
-      ambResource.educationalLevel.forEach(level => {
-        if (level.id) {
-          tags.push(createTag('educationalLevel:id', level.id));
-        }
-        if (level.prefLabel) {
-          Object.entries(level.prefLabel).forEach(([lang, label]) => {
-            tags.push(createTag(`educationalLevel:prefLabel:${lang}`, label));
-          });
-        }
-        if (level.type) {
-          tags.push(createTag('educationalLevel:type', level.type));
-        }
-      });
+      ambResource.educationalLevel.forEach(level => emitConcept('educationalLevel', level));
     }
 
     // Add audience (using colon-delimited tags)
     if (ambResource.audience && ambResource.audience.length > 0) {
-      ambResource.audience.forEach(aud => {
-        if (aud.id) {
-          tags.push(createTag('audience:id', aud.id));
-        }
-        if (aud.prefLabel) {
-          Object.entries(aud.prefLabel).forEach(([lang, label]) => {
-            tags.push(createTag(`audience:prefLabel:${lang}`, label));
-          });
-        }
-        if (aud.type) {
-          tags.push(createTag('audience:type', aud.type));
-        }
-      });
+      ambResource.audience.forEach(aud => emitConcept('audience', aud));
     }
 
     // Add learning resource type (using colon-delimited tags)
     if (ambResource.learningResourceType && ambResource.learningResourceType.length > 0) {
-      ambResource.learningResourceType.forEach(lrt => {
-        if (lrt.id) {
-          tags.push(createTag('learningResourceType:id', lrt.id));
-        }
-        if (lrt.prefLabel) {
-          Object.entries(lrt.prefLabel).forEach(([lang, label]) => {
-            tags.push(createTag(`learningResourceType:prefLabel:${lang}`, label));
-          });
-        }
-        if (lrt.type) {
-          tags.push(createTag('learningResourceType:type', lrt.type));
-        }
-      });
+      ambResource.learningResourceType.forEach(lrt => emitConcept('learningResourceType', lrt));
     }
 
     // Add published date (spec uses 'datePublished')
@@ -347,28 +310,22 @@ export function ambToNostr(
 
     // Add teaches (Concept array)
     if (ambResource.teaches && ambResource.teaches.length > 0) {
-      ambResource.teaches.forEach(concept => {
-        addConceptTags(tags, 'teaches', concept);
-      });
+      ambResource.teaches.forEach(concept => emitConcept('teaches', concept));
     }
 
     // Add assesses (Concept array)
     if (ambResource.assesses && ambResource.assesses.length > 0) {
-      ambResource.assesses.forEach(concept => {
-        addConceptTags(tags, 'assesses', concept);
-      });
+      ambResource.assesses.forEach(concept => emitConcept('assesses', concept));
     }
 
     // Add competencyRequired (Concept array)
     if (ambResource.competencyRequired && ambResource.competencyRequired.length > 0) {
-      ambResource.competencyRequired.forEach(concept => {
-        addConceptTags(tags, 'competencyRequired', concept);
-      });
+      ambResource.competencyRequired.forEach(concept => emitConcept('competencyRequired', concept));
     }
 
     // Add interactivityType (Concept)
     if (ambResource.interactivityType) {
-      addConceptTags(tags, 'interactivityType', ambResource.interactivityType);
+      emitConcept('interactivityType', ambResource.interactivityType);
     }
 
     // Add mainEntityOfPage (array of complex objects)
@@ -421,12 +378,21 @@ export function ambToNostr(
               addPersonOrOrgTags(tags, `${prefix}:creator`, creator);
             });
           }
-          // Add nested license tag
+          // Add nested license tag(s)
           // String license uses prefix:license (simple value)
           // Object license uses prefix:license:id (nested structure)
+          // Non-standard array-of-Concepts license (see top-level license
+          // handling above) emits one prefix:license:id tag per entry, in order.
           if (ref.license) {
             if (typeof ref.license === 'string') {
               tags.push(createTag(`${prefix}:license`, ref.license));
+            } else if (Array.isArray(ref.license)) {
+              warnings.push(`Non-standard AMB: ${prefix}.license is an array of Concepts`);
+              (ref.license as any[])
+                .filter(entry => entry?.id)
+                .forEach(entry => {
+                  tags.push(createTag(`${prefix}:license:id`, entry.id));
+                });
             } else if (ref.license.id) {
               tags.push(createTag(`${prefix}:license:id`, ref.license.id));
             }
@@ -464,14 +430,18 @@ export function ambToNostr(
             if (typeof item === 'string') {
               tags.push(createTag(`ext:${ns}:${facet}`, item));
             } else if (item && typeof item === 'object') {
-              if (item.id) tags.push(createTag(`ext:${ns}:${facet}:id`, item.id));
+              const prefix = `ext:${ns}:${facet}`;
+              const canon = item.id ? canonicalConceptId(item.id) : undefined;
+              if (canon?.warning) warnings.push(canon.warning);
+              if (canon) tags.push(createTag(`${prefix}:id`, canon.id));
               if (item.prefLabel) {
                 for (const [lang, label] of Object.entries(item.prefLabel)) {
                   assertColonFree(lang, `ext prefLabel language for "${ns}:${facet}"`);
-                  tags.push(createTag(`ext:${ns}:${facet}:prefLabel:${lang}`, label as string));
+                  tags.push(createTag(`${prefix}:prefLabel:${lang}`, label as string));
                 }
               }
-              tags.push(createTag(`ext:${ns}:${facet}:type`, item.type || 'Concept'));
+              tags.push(createTag(`${prefix}:type`, item.type || 'Concept'));
+              if (canon) pushCompanionTag(tags, prefix, canon, options, companionSeen);
             }
           }
         }
@@ -669,13 +639,23 @@ function addMediaObjectTags(
 /**
  * Add tags for Concept
  */
-function addConceptTags(
+/**
+ * Flattened concept triple (`<prefix>:id`, `:prefLabel:<lang>`, `:type`) with the id
+ * canonicalised per NIP-VOCAB, followed by the companion `a` tag when the concept
+ * is published on Nostr (see pushCompanionTag).
+ */
+function emitConceptTags(
   tags: NostrTag[],
   prefix: string,
-  concept: Concept
+  concept: Concept,
+  options: ConversionOptions,
+  companionSeen: Set<string>,
+  warnings: string[]
 ): void {
-  if (concept.id) {
-    tags.push(createTag(`${prefix}:id`, concept.id));
+  const canon = concept.id ? canonicalConceptId(concept.id) : undefined;
+  if (canon?.warning) warnings.push(canon.warning);
+  if (canon) {
+    tags.push(createTag(`${prefix}:id`, canon.id));
   }
   if (concept.prefLabel) {
     Object.entries(concept.prefLabel).forEach(([lang, label]) => {
@@ -685,4 +665,30 @@ function addConceptTags(
   if (concept.type) {
     tags.push(createTag(`${prefix}:type`, concept.type));
   }
+  if (canon) pushCompanionTag(tags, prefix, canon, options, companionSeen);
+}
+
+/**
+ * ["a", "<kind>:<pubkey>:<d>", <relay-hint>, "<prefix>"] — an index and relay hint for a
+ * concept identified by a Nostr URI; the `<prefix>:id` tag stays authoritative. The hint
+ * is the one carried by a received naddr, else options.defaultRelayHint, else ''.
+ * Emitted once per (address, prefix) per event; disabled by conceptCompanionTags: false.
+ */
+function pushCompanionTag(
+  tags: NostrTag[],
+  prefix: string,
+  canon: { address?: string; relayHint?: string },
+  options: ConversionOptions,
+  companionSeen: Set<string>
+): void {
+  if (options.conceptCompanionTags === false || !canon.address) return;
+  // Companion tags are defined for NIP-VOCAB entities (39737 scheme, 39738 concept,
+  // 39739 collection). A Nostr URI of another kind is still a valid identifier but
+  // gets no companion tag.
+  const kind = Number(canon.address.split(':')[0]);
+  if (kind < 39737 || kind > 39739) return;
+  const key = `${canon.address}\u0000${prefix}`;
+  if (companionSeen.has(key)) return;
+  companionSeen.add(key);
+  tags.push(['a', canon.address, canon.relayHint ?? options.defaultRelayHint ?? '', prefix]);
 }

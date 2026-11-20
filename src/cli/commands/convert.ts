@@ -5,12 +5,29 @@ import { ambToNostr, nostrToAmb } from '../../converters/index.js';
 import { sodixToAmb, SODIX_FILTERS, type SodixIdScheme } from '../../sources/sodix/index.js';
 import { ConversionOptions } from '../../types/index.js';
 import { parsePrivateKey, derivePublicKey, signNostrEvent } from '../../utils/signing.js';
-import { bulkTimestamp, nowInSeconds } from '../utils/bulk-timestamps.js';
 
 /**
  * Conversion direction
  */
 type ConversionDirection = 'amb:nostr' | 'nostr:amb' | 'sodix:amb';
+
+/**
+ * created_at for item `index` of a bulk conversion of `total` items.
+ *
+ * Each event needs its own created_at: a batch sharing one timestamp breaks
+ * relays that paginate with `until = oldest - 1`, which drops events silently
+ * or loops. The seconds therefore step by one per item.
+ *
+ * They step *backwards* from `now`, so the batch ends at the present instead of
+ * running `total` seconds into the future. Future-dating is not cosmetic here:
+ * kind-30142 is addressable, so a relay keeps the highest created_at per
+ * kind:pubkey:d — a correction published later at real wall-clock time would
+ * look older than the synthetic stamp and be discarded unseen. Observed on a
+ * 16,139-record SODIX ingest whose last event was dated 4h29m ahead.
+ */
+export function bulkTimestamp(now: number, index: number, total: number): number {
+  return now - (total - 1 - index);
+}
 
 /**
  * Parse conversion direction from string
@@ -131,22 +148,8 @@ async function executeConvert(
     const results: string[] = [];
     let errorCount = 0;
 
-    // Unique, strictly increasing created_at values for bulk conversions, so
-    // cursor-based pagination on relays works — but counted BACKWARDS from now,
-    // never forwards.
-    //
-    // Counting forwards (base + i) puts almost the whole batch in the future:
-    // at one second per record, 35k records land up to 9.7 hours ahead. That
-    // breaks more than it fixes — `since`/`until` filters and cursors skew,
-    // relays that reject future-dated events drop them, and an addressable
-    // event dated in the future cannot be replaced by a correction until real
-    // time catches up, because the correction is "older" by created_at.
-    //
-    // Counting backwards keeps every value unique and ordered while the newest
-    // record lands exactly at now. The batch then appears to have been created
-    // over the span it actually took.
-    const nowSeconds = nowInSeconds();
-    const timestampFor = (index: number): number => bulkTimestamp(index, inputs.length, nowSeconds);
+    // Unique created_at per item, stepping back from now (see bulkTimestamp).
+    const baseTimestamp = Math.floor(Date.now() / 1000);
 
     for (let i = 0; i < inputs.length; i++) {
       const inputJson = inputs[i];
@@ -157,7 +160,7 @@ async function executeConvert(
 
         if (direction === 'amb:nostr') {
           const itemOptions = inputs.length > 1
-            ? { ...conversionOptions, timestamp: timestampFor(i) }
+            ? { ...conversionOptions, timestamp: bulkTimestamp(baseTimestamp, i, inputs.length) }
             : conversionOptions;
           const conversionResult = ambToNostr(inputJson, itemOptions);
 

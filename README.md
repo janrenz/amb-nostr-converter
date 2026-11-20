@@ -96,6 +96,29 @@ amb-convert amb:nostr resources.jsonl --nsec $NOSTR_NSEC -o events.jsonl
 amb-convert sodix:amb sodix-records.jsonl --sodix-filter open-license -o amb.jsonl
 ```
 
+## Concept identifiers and companion tags (NIP-VOCAB)
+
+Concept objects (`about`, `learningResourceType`, `audience`, `educationalLevel`,
+`teaches`, `assesses`, `competencyRequired`, `interactivityType`, ext facets) are
+identified by an external URI or, for concepts published on Nostr without one, by
+their **canonical Nostr URI** `nostr:naddr1…` (relay-less NIP-19 naddr of the
+published kind, pubkey and byte-exact `d`). The converter:
+
+- canonicalises concept ids in both directions — the legacy
+  `nostr:<kind>:<pubkey>:<d>`, `urn:nostr:…` and relay-hinted naddr forms become
+  the canonical URI, with a `legacy concept identifier … canonicalised` warning;
+  external URIs and unparseable values pass through unchanged;
+- emits one companion `["a", "<kind>:<pubkey>:<d>", <relay-hint>, "<prefix>"]` tag
+  per NIP-VOCAB concept (kinds 39737–39739), where `<prefix>` is the flattened tag
+  prefix the concept appears under (`about`, `teaches`, `ext:<ns>:<facet>`, …). The
+  relay hint is the one carried by a received naddr, else `defaultRelayHint`, else
+  empty. Set `conceptCompanionTags: false` to suppress them (e.g. when the caller
+  adds companion tags with better relay hints itself);
+- on reverse conversion ignores facet-marked `a` tags (the concept is already
+  present through its `<prefix>:id` triple) and derives relation ids
+  (`isPartOf`/`hasPart`/`isBasedOn`) as **relay-less** naddr; the hint stays on the
+  `a` tag.
+
 ## CLI Reference
 
 | Option | Description | Direction |
